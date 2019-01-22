@@ -1,11 +1,11 @@
 package se.jiderhamn.spotify;
 
-import java.io.IOException;
-
 import com.wrapper.spotify.SpotifyApi;
 import com.wrapper.spotify.SpotifyHttpManager;
 import com.wrapper.spotify.exceptions.SpotifyWebApiException;
 import com.wrapper.spotify.model_objects.credentials.AuthorizationCodeCredentials;
+
+import java.io.IOException;
 
 /**
  * @author Mattias Jiderhamn
@@ -16,7 +16,7 @@ public class SpotifyClient {
   private static final SpotifyApi SPOTIFY_API = new SpotifyApi.Builder()
       .setClientId(CLIENT_ID)
       .setClientSecret("c69ccd9be4a54dd5bbfcfdee7cce4d90")
-      .setRedirectUri(SpotifyHttpManager.makeUri("http://jiderhamn.se/spotify-redirect"))
+      .setRedirectUri(SpotifyHttpManager.makeUri("http://playlistmixer.jiderhamn.se/"))
       .build();
 
   public static SpotifyApi getClient() {

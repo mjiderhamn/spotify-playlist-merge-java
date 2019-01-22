@@ -1,25 +1,29 @@
 package se.jiderhamn.spotify;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.time.Duration;
-import java.time.LocalDateTime;
-import java.time.temporal.ChronoUnit;
-import java.util.*;
-import java.util.function.Function;
-
 import com.wrapper.spotify.SpotifyApi;
 import com.wrapper.spotify.exceptions.SpotifyWebApiException;
-import com.wrapper.spotify.exceptions.detailed.UnauthorizedException;
 import com.wrapper.spotify.model_objects.credentials.AuthorizationCodeCredentials;
 import com.wrapper.spotify.model_objects.specification.Paging;
 import com.wrapper.spotify.model_objects.specification.Playlist;
 import com.wrapper.spotify.model_objects.specification.PlaylistTrack;
 import com.wrapper.spotify.model_objects.specification.Track;
 import com.wrapper.spotify.requests.authorization.authorization_code.AuthorizationCodeUriRequest;
-import com.wrapper.spotify.requests.data.playlists.AddTracksToPlaylistRequest;
 import com.wrapper.spotify.requests.data.playlists.GetPlaylistsTracksRequest;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.function.Function;
+
 import org.apache.commons.collections4.ListUtils;
 
 import static java.util.Arrays.asList;
@@ -30,7 +34,7 @@ import static java.util.stream.Collectors.toList;
 /**
  * @author Mattias Jiderhamn
  */
-public class Main {
+public class Main extends AbstractSpotifyAction {
   
   private static final String RESULT_USER_ID = "mattiasj78";
 
@@ -62,27 +66,10 @@ public class Main {
   }
   
   public static void main(String[] args) throws IOException, SpotifyWebApiException {
-    final SpotifyApi client = SpotifyClient.getClient();
-    
-    // TODO Cache auth code on disk
-
-    try {
-      perform();
-    }
-    catch (RuntimeException e) {
-      if(e.getCause() instanceof UnauthorizedException) {
-        System.err.println("Need to re-authenticate");
-        authenticate(client);
-
-        perform();
-      }
-      else 
-        throw e;
-    }
-
+    main(new Main(), args);
   }
 
-  private static void perform() throws IOException, SpotifyWebApiException {
+  protected void perform() throws IOException, SpotifyWebApiException {
     final Map<String, List<Track>> tracksPerType = sortTracks();
     for(Map.Entry<String, List<Track>> entry : tracksPerType.entrySet()) {
       final List<Track> tracks = entry.getValue();
@@ -107,7 +94,7 @@ public class Main {
     for(String type : tracksPerType.keySet()) {
       final List<Track> tracksOfType = tracksPerType.get(type);
       if(! tracksOfType.isEmpty()) {
-        System.out.println("Unused tracks of type " + type + "(" + tracksOfType.stream() + "):");
+        System.out.println("Unused tracks of type " + type + "(" + tracksOfType.size() + "):");
         tracksOfType.forEach(track -> System.out.println("  " + track.getName()));
       }
     }
@@ -127,19 +114,10 @@ public class Main {
     final List<List<Track>> partitions = new ArrayList<>(ListUtils.partition(result, 50));
     Collections.reverse(partitions);
     for(List<Track> partition : partitions) {
-      addTracksToPlaylist(playlist, partition);
+      addTracksToPlaylist(RESULT_USER_ID, playlist, partition);
     }
     
     // getTempo();
-  }
-
-  private static void addTracksToPlaylist(Playlist playlist, List<Track> tracks) throws IOException, SpotifyWebApiException {
-    final String[] uris = tracks.stream().map(Track::getUri).toArray(String[]::new);
-    AddTracksToPlaylistRequest addTracksToPlaylistRequest = SpotifyClient.getClient()
-              .addTracksToPlaylist(RESULT_USER_ID, playlist.getId(), uris)
-              .position(0)
-              .build();
-    addTracksToPlaylistRequest.execute();
   }
 
   private static List<Track> merge(Map<String, List<Track>> tracksPerType) {
