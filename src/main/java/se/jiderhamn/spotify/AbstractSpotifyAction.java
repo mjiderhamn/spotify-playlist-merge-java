@@ -2,6 +2,7 @@ package se.jiderhamn.spotify;
 
 import com.wrapper.spotify.SpotifyApi;
 import com.wrapper.spotify.exceptions.SpotifyWebApiException;
+import com.wrapper.spotify.exceptions.detailed.TooManyRequestsException;
 import com.wrapper.spotify.exceptions.detailed.UnauthorizedException;
 import com.wrapper.spotify.model_objects.credentials.AuthorizationCodeCredentials;
 import com.wrapper.spotify.model_objects.specification.Paging;
@@ -20,6 +21,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.List;
 import java.util.Properties;
+import java.util.concurrent.Callable;
 
 import org.apache.commons.io.FileUtils;
 
@@ -122,5 +124,22 @@ public abstract class AbstractSpotifyAction {
 
   private static File getPropsFile() {
     return new File(FileUtils.getTempDirectory(), AbstractSpotifyAction.class.getName() + ".auth");
+  }
+  
+  protected <T> T rateLimited(Callable<T> callable) {
+    try {
+      return callable.call();
+    }
+    catch (TooManyRequestsException e) {
+      System.out.print('.');
+      try {
+        Thread.sleep(e.getRetryAfter() * 1000 + 100);
+      }
+      catch (InterruptedException ignored) { }
+      return rateLimited(callable);
+    }
+    catch (Exception e) {
+      throw new RuntimeException(e);
+    }
   }
 }

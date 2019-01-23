@@ -1,6 +1,7 @@
 package se.jiderhamn.spotify;
 
 import com.wrapper.spotify.exceptions.SpotifyWebApiException;
+import com.wrapper.spotify.exceptions.detailed.InternalServerErrorException;
 import com.wrapper.spotify.model_objects.specification.Paging;
 import com.wrapper.spotify.model_objects.specification.PlaylistSimplified;
 import com.wrapper.spotify.model_objects.specification.PlaylistTrack;
@@ -18,6 +19,8 @@ import java.util.Set;
 
 import static java.util.Arrays.asList;
 import static java.util.Collections.emptyList;
+import static java.util.stream.Collectors.toList;
+import static org.apache.commons.lang3.StringUtils.isBlank;
 
 /**
  * @author Mattias Jiderhamn
@@ -36,20 +39,23 @@ public class OfflineEliminator extends AbstractSpotifyAction {
 
   @Override
   protected void perform() throws IOException, SpotifyWebApiException {
-    final List<PlaylistSimplified> allUsersPlaylists = getAllUsersPlaylists();
+    final String userId = getUserId();
+    final List<PlaylistSimplified> usersPlaylists = getAllUsersPlaylists().stream()
+      .filter(playlist -> userId.equals(playlist.getOwner().getId()))
+      .collect(toList());
+    System.out.println(usersPlaylists.size() + " playlists are our own");
     /*
-    for(PlaylistSimplified playlist : allUsersPlaylists) {
+    for(PlaylistSimplified playlist : usersPlaylists) {
       if(playlist.getName().endsWith(LOCAL_PLAYLIST_SUFFIX)) {
         localPlaylists.put(playlist.getName(), playlist);
       }
     }
     */
     
-    final String userId = getUserId();
-    for(PlaylistSimplified playlist : allUsersPlaylists) {
-      if(userId.equals(playlist.getOwner().getId()) /* && ! localPlaylists.containsKey(playlist.getName()) */) {
+    for(PlaylistSimplified playlist : usersPlaylists) {
+//      if(! localPlaylists.containsKey(playlist.getName())) {
         processPlaylist(playlist);
-      }
+//      }
     }
 
 //    final Playlist temp = client.getPlaylist("58eA4SpDkkXWjX0grV9F5H").build().execute();
@@ -62,6 +68,8 @@ public class OfflineEliminator extends AbstractSpotifyAction {
     
     final Map<String, String> replacements = new LinkedHashMap<>(); // local URI => online URI (retain order)
     final Set<String> onlineTracks = new HashSet<>(); // To avoid duplicates
+    final Set<String> noHits = new HashSet<>();
+    final Set<String> tooManyHits = new HashSet<>();
     
     int trackPosition = 0;
     int tracksProcessed = 0;
@@ -73,8 +81,17 @@ public class OfflineEliminator extends AbstractSpotifyAction {
       for(PlaylistTrack playlistTrack : tracks) {
         if(playlistTrack.getIsLocal() != null && playlistTrack.getIsLocal()) {
           final Track localTrack = playlistTrack.getTrack();
-          final List<Track> foundTracks = searchTrack(localTrack);
-          if(foundTracks.size() == 1) { // Exactly one match - replace with online version
+          List<Track> foundTracks = searchTrack(localTrack.getArtists()[0].getName(), localTrack.getAlbum().getName(), localTrack.getName());
+          if(foundTracks.isEmpty()) {
+            foundTracks = searchTrack(localTrack.getArtists()[0].getName(), null, localTrack.getName()); // Search without album
+            // TODO If found this way, do not simply remove the original without backing up
+          }
+
+          if(foundTracks.isEmpty()) {
+            noHits.add(localTrack.getUri());
+            // System.err.println("No hit found for " + localTrack.getArtists()[0].getName() + " - " + localTrack.getAlbum().getName() + " - " + localTrack.getName());
+          }
+          else if(foundTracks.size() == 1) { // Exactly one match - replace with online version
             final Track onlineTrack = foundTracks.get(0);
             replacements.put(localTrack.getUri(), onlineTrack.getUri());
             
@@ -89,8 +106,11 @@ public class OfflineEliminator extends AbstractSpotifyAction {
 //            trackToRemove.add("positions", positions);
 //            tracksToRemove.add(trackToRemove);
 //            client.removeTracksFromPlaylist(playlist.getId(), null).snapshotId(playlist.getSnapshotId()).build().execute();
-            // Removal does not currently work!
+            // Removal does not currently work! https://github.com/spotify/web-api/issues/886
 //            System.exit(0);  
+          }
+          else {
+            tooManyHits.add(localTrack.getUri());
           }
         }
         else { // Already online track
@@ -111,12 +131,14 @@ public class OfflineEliminator extends AbstractSpotifyAction {
       }
     }
 
+    final String unreplaceable = noHits.isEmpty() ? "" : (noHits.size() + " were not found; ") + (tooManyHits.isEmpty() ? "" : tooManyHits.size() + " ambiguous"); 
     if(! replacements.isEmpty()) {
-      System.out.println(replacements.size() + " tracks can be converted to online");
-      client.addTracksToPlaylist(playlist.getId(), replacements.values().toArray(new String[0])).build().execute();
+      Set<String> onlineReplacements = new HashSet<>(replacements.values()); // Avoid duplicates
+      System.out.println(replacements.size() + " tracks can be converted to online. " + unreplaceable);
+      addTracksToPlaylist(playlist, onlineReplacements);
     }
     else {
-      System.out.println("Nothing to replace");
+      System.out.println("Nothing to replace. " + unreplaceable);
     }
     
 //    if(replacedTracks > 0) {
@@ -125,17 +147,49 @@ public class OfflineEliminator extends AbstractSpotifyAction {
 //    }
 //              client.replacePlaylistsTracks();
   }
-  
-  private List<Track> searchTrack(Track criteria) throws IOException, SpotifyWebApiException {
-    String queryString = "artist:\"" + criteria.getArtists()[0].getName()/*.replace(' ', '+')*/ + 
-                "\" album:\"" + criteria.getAlbum().getName()/*.replace(' ', '+')*/ +
-                "\" track:\"" + criteria.getName()/*.replace(' ', '+')*/ + "\""; 
-    
-    final Paging<Track> searchPage = client.searchTracks(queryString).build().execute();
+
+  private void addTracksToPlaylist(PlaylistSimplified playlist, Set<String> uris) throws IOException, SpotifyWebApiException {
+    try {
+      final int batchSize = 50;
+      final List<String> all = new ArrayList<>(uris);
+      while(! all.isEmpty()) {
+        if(all.size() > batchSize) {
+          List<String> batch = all.subList(0, batchSize);
+          System.out.println("Adding " + batch.size() + " tracks");
+          client.addTracksToPlaylist(playlist.getId(), batch.toArray(new String[0])).build().execute();
+          all.removeAll(batch); // subList() would be faster...
+        }
+        else { // Less than 100, do all
+          System.out.println("Adding all " + all.size() + " tracks");
+          client.addTracksToPlaylist(playlist.getId(), all.toArray(new String[0])).build().execute();
+          all.clear();
+        }
+      }
+    }
+    catch (InternalServerErrorException e) {
+      System.err.println("We may have passed the 10k limit");
+      e.printStackTrace();
+    }
+  }
+
+  private List<Track> searchTrack(String artist, String album, String trackName) throws IOException, SpotifyWebApiException {
+    final String queryString = toSearchQuery(artist, album, trackName);
+    if(isBlank(queryString)) {
+      return emptyList();
+    }
+
+    Paging<Track> searchPage = rateLimited(() -> client.searchTracks(queryString).build().execute());
 
     // System.out.println("'" + criteria.getName() + "' is local. Searching using " + queryString + " resulted in " + searchPage.getTotal());
     
-    return searchPage.getTotal() == 0 ? emptyList() : asList(searchPage.getItems());
+    return searchPage == null || searchPage.getTotal() == 0 ? emptyList() : asList(searchPage.getItems());
+  }
+  
+  private static String toSearchQuery(String artist, String album, String trackName) {
+    return  
+      (isBlank(artist) ? "" : ("artist:\"" + artist + "\" ") +
+      (isBlank(album) ? "" : "album:\"" + album + "\" ") +
+      (isBlank(trackName) ? "" : "track:\"" + trackName + "\"")).trim();
   }
 
   private List<PlaylistSimplified> getAllUsersPlaylists() throws IOException, SpotifyWebApiException {
